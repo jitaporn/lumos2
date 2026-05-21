@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Secure Wallet</title>
+    
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#dc2626">
+    <link rel="apple-touch-icon" href="icon.png"> 
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+    <script src="lib/tailwindcss.js"></script>
+    <script src="lib/vue.global.js"></script>
+    <script src="lib/zxcvbn.js"></script>
+
+    <style>
+        body { 
+            font-family: 'Sarabun', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background-color: #f3f4f6; 
+            user-select: none; 
+            -webkit-tap-highlight-color: transparent;
+            /* แก้ไขความสูงสำหรับมือถือโดยเฉพาะ (dvh) */
+            height: 100vh;
+            height: 100dvh; 
+        }
+        
+        ::-webkit-scrollbar { width: 0px; background: transparent; }
+        
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #dc2626; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        .icon { width: 1.2em; height: 1.2em; fill: currentColor; display: inline-block; vertical-align: middle; }
+        .icon-lg { width: 1.5em; height: 1.5em; }
+        .icon-xl { width: 2em; height: 2em; }
+        
+        .custom-select {
+            appearance: none;
+            background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+            background-repeat: no-repeat;
+            background-position: right 0.5rem center;
+            background-size: 1em;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 overflow-hidden">
+
+<div id="app" class="h-full flex flex-col relative max-w-md lg:max-w-3xl mx-auto bg-white shadow-2xl">
+
+    <div v-if="isLoading" class="absolute inset-0 z-50 bg-black/50 flex items-center justify-center">
+        <div class="bg-white p-6 rounded-lg shadow-lg flex flex-col items-center">
+            <div class="loader mb-2"></div>
+            <p class="text-sm font-bold text-gray-700">{{ loadingText }}</p>
+        </div>
+    </div>
+
+    <div v-if="confirmDialog.visible" class="absolute inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
+        <div class="bg-white w-full max-w-sm rounded-xl shadow-2xl p-5 space-y-4">
+            <div>
+                <h2 class="text-lg font-bold text-gray-800">{{ confirmDialog.title }}</h2>
+                <p class="text-sm text-gray-500 mt-1">{{ confirmDialog.message }}</p>
+            </div>
+            <div class="flex gap-3 justify-end">
+                <button v-if="confirmDialog.showCancel" @click="resolveConfirm(false)" class="px-4 py-2 rounded-lg border border-gray-200 text-gray-600 font-bold active:scale-95 transition">
+                    ยกเลิก
+                </button>
+                <button @click="resolveConfirm(true)" class="px-4 py-2 rounded-lg bg-red-600 text-white font-bold shadow active:scale-95 transition">
+                    {{ confirmDialog.okText }}
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <header class="bg-red-600 text-white p-4 shadow-md z-10 flex justify-between items-center shrink-0">
+        <div class="flex items-center gap-3">
+            <button v-if="view !== 'list' && view !== 'login'" @click="goBack" class="text-xl">
+                <svg class="icon" viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+            </button>
+            <h1 class="text-xl font-bold">{{ headerTitle }}</h1>
+        </div>
+        
+        <div v-if="view === 'list'" class="flex gap-2 items-center">
+            <button @click="triggerSaveFlow" class="bg-white text-red-600 px-3 py-1 rounded shadow font-bold text-sm flex items-center hover:bg-red-50 transition">
+                <svg class="icon mr-1" viewBox="0 0 24 24"><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
+                บันทึก
+            </button>
+            <button @click="view = 'settings'" class="text-white px-2">
+                <svg class="icon" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.68 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+            </button>
+            <button @click="logout" class="text-white px-2">
+                <svg class="icon" viewBox="0 0 24 24"><path d="M10.09 15.59L11.5 17l5-5-5-5-1.41 1.41L12.67 11H3v2h9.67l-2.58 2.59zM19 3H5c-1.11 0-2 .9-2 2v4h2V5h14v14H5v-4H3v4c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg>
+            </button>
+        </div>
+
+        <div v-if="view === 'editor'" class="flex gap-3">
+            <button @click="saveRecord" class="text-lg text-white">
+                <svg class="icon icon-lg" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+            </button>
+        </div>
+    </header>
+
+    <main class="flex-1 overflow-y-auto relative p-4 lg:p-6 scroll-smooth">
+
+        <div v-if="view === 'login'" class="flex flex-col items-center justify-center h-full space-y-6">
+            <div class="text-red-600 text-6xl mb-4">
+                <svg class="icon icon-xl" style="width: 4rem; height: 4rem;" viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></svg>
+            </div>
+            <h2 class="text-2xl font-bold text-gray-700">Secure Wallet</h2>
+            
+            <div class="w-full space-y-4">
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 text-center">
+                    <label class="block text-gray-500 mb-3 font-bold">เลือกไฟล์ฐานข้อมูล (.enc)</label>
+                    <p v-if="savedVaultInfo" class="text-xs text-green-600 mb-3 font-bold">
+                        พบข้อมูลที่บันทึกไว้ในเครื่องแล้ว ใส่รหัสผ่านเพื่อเปิดใช้งานได้ทันที
+                    </p>
+                    <input type="file" @change="handleFileUpload" accept=".enc,.db,.txt" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-red-50 file:text-red-700 hover:file:bg-red-100 mx-auto"/>
+                </div>
+
+                <div class="relative">
+                    <input :type="showLoginPass ? 'text' : 'password'" v-model="masterPassword" autocomplete="new-password" name="master_key_field" placeholder="รหัสผ่านหลัก" class="w-full p-3 border rounded-lg focus:outline-none focus:border-red-500 text-center text-lg shadow-sm">
+                    <button @click="showLoginPass = !showLoginPass" class="absolute right-3 top-4 text-gray-400">
+                        <svg v-if="showLoginPass" class="icon" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                        <svg v-else class="icon" viewBox="0 0 24 24"><path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/></svg>
+                    </button>
+                </div>
+
+                <button @click="unlockDatabase" class="w-full bg-red-600 text-white py-3 rounded-lg font-bold shadow-lg active:scale-95 transition hover:bg-red-700 flex justify-center items-center gap-2">
+                    <svg class="icon" viewBox="0 0 24 24"><path d="M12 17c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm6-9h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6h1.9c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm0 12H6V10h12v10z"/></svg>
+                    {{ uploadedFileContent || savedVaultInfo ? 'เปิดใช้งาน' : 'เริ่มใช้งาน / สร้างใหม่' }}
+                </button>
+            </div>
+        </div>
+
+        <div v-if="view === 'list'" class="space-y-4 pb-20">
+            <div class="sticky top-0 bg-white z-10 pb-2 pt-2">
+                <div class="relative">
+                    <svg class="icon absolute left-4 top-3.5 text-gray-400" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                    <input type="text" v-model="searchQuery" placeholder="ค้นหา..." class="w-full bg-gray-100 p-3 pl-10 rounded-full focus:outline-none focus:ring-2 focus:ring-red-200 shadow-inner">
+                </div>
+            </div>
+
+            <div v-if="filteredRecords.length === 0" class="text-center text-gray-400 mt-10">
+                <p>ไม่พบรายการ</p>
+            </div>
+
+            <div v-for="rec in filteredRecords" :key="rec.id" @click="editRecord(rec)" 
+                 class="relative pl-4 py-3 border-b border-gray-100 hover:bg-gray-50 cursor-pointer transition flex items-center justify-between group">
+                <div class="flex items-center gap-4">
+                    <div class="w-10 h-10 rounded-full bg-red-50 text-red-500 flex items-center justify-center text-lg shadow-sm group-hover:bg-red-100 transition">
+                        <span v-html="getIconSvg(rec.category)"></span>
+                    </div>
+                    <div>
+                        <h3 class="font-bold text-gray-700">{{ rec.title }}</h3>
+                        <p class="text-xs text-gray-400">{{ getSubtitle(rec) }}</p>
+                    </div>
+                </div>
+                <svg class="icon text-gray-300" viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+            </div>
+        </div>
+
+        <div v-if="view === 'editor'" class="space-y-6 pb-20">
+            <div class="bg-white p-2">
+                <label class="text-xs font-bold text-gray-400 ml-1">ชื่อรายการ</label>
+                <input type="text" v-model="tempRecord.title" class="w-full text-2xl font-bold border-b-2 border-red-100 py-2 focus:outline-none focus:border-red-500 placeholder-gray-300" placeholder="ชื่อรายการ">
+                
+                <div class="flex gap-2 overflow-x-auto py-3 mt-2">
+                    <button v-for="cat in categories" @click="changeCategory(cat)" 
+                        :class="['px-3 py-1 rounded-full text-xs border whitespace-nowrap transition', tempRecord.category === cat ? 'bg-red-600 text-white border-red-600' : 'bg-white text-gray-500 border-gray-200']">
+                        {{ cat }}
+                    </button>
+                </div>
+            </div>
+
+            <div v-if="tempRecord.category === 'Website'" class="space-y-6">
+                <div class="bg-gray-50 p-4 rounded-xl border border-gray-200 relative">
+                    <label class="text-xs font-bold text-gray-500 uppercase">USERNAME / EMAIL</label>
+                    <input type="text" v-model="tempRecord.username" class="w-full bg-transparent text-gray-800 text-lg py-1 focus:outline-none border-b border-gray-300 focus:border-red-500">
+                </div>
+                <div class="bg-gray-50 p-4 rounded-xl border border-gray-200 relative">
+                    <div class="flex justify-between items-end mb-2">
+                        <label class="text-xs font-bold text-gray-500 uppercase">PASSWORD</label>
+                        <button @click="generateIntoPassword" class="bg-red-600 text-white text-xs px-3 py-1 rounded-full flex items-center gap-1">
+                            <svg class="icon" style="width:0.8em;height:0.8em" viewBox="0 0 24 24"><path d="M7.5 5.6L10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 12.9l-2.5 2.5 2.5 2.5 2.5-2.5zM19 2l-2.5 2.5L19 7l2.5-2.5z"/></svg> 
+                            Gen รหัส
+                        </button>
+                    </div>
+                    <div class="relative">
+                        <input :type="tempRecord.showPass ? 'text' : 'password'" v-model="tempRecord.password" @input="checkStrength" class="w-full bg-transparent text-gray-800 text-lg py-1 pr-10 focus:outline-none border-b border-gray-300 focus:border-red-500 font-mono">
+                        <button @click="tempRecord.showPass = !tempRecord.showPass" class="absolute right-0 top-1 text-gray-400">
+                             <svg v-if="tempRecord.showPass" class="icon" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                             <svg v-else class="icon" viewBox="0 0 24 24"><path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/></svg>
+                        </button>
+                    </div>
+                    <div v-if="tempRecord.password" class="mt-2 flex items-center gap-2 text-xs">
+                        <span class="text-gray-400">ใช้เวลาเจาะ:</span> <span :class="strengthTextClass" class="font-bold">{{ crackTimeText }}</span>
+                    </div>
+                </div>
+            </div>
+
+            <div v-if="tempRecord.category === 'Credit Card'" class="space-y-4">
+                <div class="bg-gray-50 p-4 rounded-xl border border-gray-200 space-y-4">
+                    <input type="text" v-model="tempRecord.cardNum" class="w-full bg-transparent text-xl font-mono border-b focus:outline-none" placeholder="Card Number">
+                    <input type="text" v-model="tempRecord.cardHolder" class="w-full bg-transparent text-lg border-b focus:outline-none" placeholder="Holder Name">
+                    
+                    <div class="flex gap-4">
+                        <div class="flex-1">
+                            <label class="text-xs font-bold text-gray-400 block mb-1">วันหมดอายุ (ด/ป)</label>
+                            <div class="flex gap-2">
+                                <select v-model="tempRecord.expMonth" class="w-full bg-white border rounded p-2 text-sm custom-select focus:outline-none focus:border-red-500">
+                                    <option value="" disabled>เดือน</option>
+                                    <option v-for="m in 12" :key="m" :value="String(m).padStart(2,'0')">{{ String(m).padStart(2,'0') }}</option>
+                                </select>
+                                <select v-model="tempRecord.expYear" class="w-full bg-white border rounded p-2 text-sm custom-select focus:outline-none focus:border-red-500">
+                                    <option value="" disabled>ปี</option>
+                                    <option v-for="y in yearOptions" :key="y" :value="String(y).slice(-2)">{{ y }}</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="w-1/3">
+                            <label class="text-xs font-bold text-gray-400 block mb-1">CVV</label>
+                            <div class="relative">
+                                <input :type="tempRecord.showCvv ? 'text' : 'password'" v-model="tempRecord.cardCvv" class="w-full bg-transparent border-b py-1 pr-6 focus:outline-none focus:border-red-500" placeholder="123">
+                                <button @click="tempRecord.showCvv = !tempRecord.showCvv" class="absolute right-0 top-1 text-gray-400">
+                                    <svg v-if="tempRecord.showCvv" class="icon" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                                    <svg v-else class="icon" viewBox="0 0 24 24"><path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/></svg>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div v-if="tempRecord.category === 'Note'" class="space-y-4">
+                <textarea v-model="tempRecord.noteContent" rows="6" class="w-full bg-yellow-50 p-4 rounded-xl border border-yellow-100 text-gray-700 focus:outline-none" placeholder="บันทึก..."></textarea>
+            </div>
+            
+            <div class="space-y-3 pt-2">
+                <div v-for="(field, index) in tempRecord.fields" :key="index" class="bg-white p-3 rounded-lg border border-gray-100 flex items-center gap-2">
+                    <input type="text" v-model="field.label" class="text-xs text-gray-400 w-1/3 focus:outline-none" placeholder="หัวข้อ">
+                    <input type="text" v-model="field.value" class="w-full text-gray-700 border-b focus:outline-none" placeholder="ข้อมูล">
+                    <button @click="removeField(index)" class="text-red-500">
+                        <svg class="icon" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                    </button>
+                </div>
+                <button @click="addField" class="w-full py-3 border-2 border-dashed text-gray-400 rounded-lg hover:border-red-400 hover:text-red-500 text-sm flex justify-center items-center gap-1">
+                    <svg class="icon" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg> เพิ่มช่องใส่ข้อมูลอื่น
+                </button>
+            </div>
+
+            <div class="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                <div class="flex justify-between items-end mb-2"><label class="text-xs font-bold text-gray-500">ไฟล์แนบ (Max 2MB)</label></div>
+                <div class="flex gap-2">
+                    <label class="flex-1 bg-white border text-gray-600 py-2 rounded-lg text-center cursor-pointer text-sm flex justify-center items-center gap-1 transition shadow-sm active:scale-95">
+                        <svg class="icon text-blue-500" viewBox="0 0 24 24"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg> รูปภาพ
+                        <input type="file" accept="image/*" class="hidden" @change="(e) => handleAttachment(e, 'image')">
+                    </label>
+                    <label class="flex-1 bg-white border text-gray-600 py-2 rounded-lg text-center cursor-pointer text-sm flex justify-center items-center gap-1 transition shadow-sm active:scale-95">
+                        <svg class="icon text-orange-500" viewBox="0 0 24 24"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S4 2.79 4 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg> ไฟล์
+                        <input type="file" class="hidden" @change="(e) => handleAttachment(e, 'file')">
+                    </label>
+                </div>
+                <div v-if="tempRecord.attachments && tempRecord.attachments.length > 0" class="mt-3 space-y-2">
+                    <div v-for="(att, idx) in tempRecord.attachments" :key="idx" class="flex justify-between items-center bg-white p-2 rounded border text-xs">
+                        <span class="truncate max-w-[150px]">{{ att.name }}</span>
+                        <div class="flex gap-2">
+                            <a :href="att.data" :download="att.name" class="text-blue-500"><svg class="icon" viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></a>
+                            <button @click="removeAttachment(idx)" class="text-red-500"><svg class="icon" viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div v-if="tempRecord.id" class="pt-6 pb-6">
+                <button @click="deleteRecord" class="w-full text-red-500 bg-red-50 py-3 rounded-lg font-bold hover:bg-red-100 transition">ลบรายการนี้</button>
+            </div>
+        </div>
+
+        <div v-if="view === 'settings'" class="space-y-6">
+            <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                <h3 class="font-bold text-gray-700 mb-4 border-b pb-2 flex items-center gap-2">
+                    <svg class="icon text-red-500" viewBox="0 0 24 24"><path d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2 2z"/></svg>
+                    เปลี่ยนรหัสผ่านเข้าโปรแกรม
+                </h3>
+                <div class="space-y-4">
+                    <input :type="settingShowPass ? 'text' : 'password'" v-model="newMasterPass" placeholder="รหัสผ่านใหม่" class="w-full p-2 border rounded focus:outline-none focus:border-red-500">
+                    <input :type="settingShowPass ? 'text' : 'password'" v-model="confirmMasterPass" placeholder="ยืนยันรหัสผ่านใหม่" class="w-full p-2 border rounded focus:outline-none focus:border-red-500">
+                    <div class="flex justify-between items-center">
+                        <button @click="settingShowPass = !settingShowPass" class="text-sm text-gray-500 flex items-center gap-1">
+                             <svg v-if="settingShowPass" class="icon" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                             <svg v-else class="icon" viewBox="0 0 24 24"><path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/></svg>
+                             แสดงรหัส
+                        </button>
+                        <button @click="changeMasterPassword" class="bg-red-600 text-white px-4 py-2 rounded shadow text-sm">บันทึกรหัสผ่านใหม่</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <button v-if="view === 'list'" @click="createNew" class="absolute bottom-10 right-6 w-16 h-16 rounded-full bg-red-600 text-white shadow-2xl flex items-center justify-center text-2xl hover:scale-110 transition z-50">
+        <svg class="icon icon-xl" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+    </button>
+</div>
+
+<script>
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(err => console.error(err));
+    const { createApp } = Vue;
+
+    const CryptoService = {
+        async deriveKey(password, salt) {
+            const enc = new TextEncoder();
+            const keyMaterial = await window.crypto.subtle.importKey("raw", enc.encode(password), { name: "PBKDF2" }, false, ["deriveKey"]);
+            return window.crypto.subtle.deriveKey({ name: "PBKDF2", salt: salt, iterations: 200000, hash: "SHA-256" }, keyMaterial, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+        },
+        async encrypt(dataObj, password) {
+            const enc = new TextEncoder();
+            const salt = window.crypto.getRandomValues(new Uint8Array(16));
+            const iv = window.crypto.getRandomValues(new Uint8Array(12));
+            const key = await this.deriveKey(password, salt);
+            const encodedData = enc.encode(JSON.stringify(dataObj));
+            const encryptedContent = await window.crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, key, encodedData);
+            return JSON.stringify({ v: 1, alg: 'AES-GCM-256', salt: this.buf2hex(salt), iv: this.buf2hex(iv), data: this.buf2base64(encryptedContent) });
+        },
+        async decrypt(encryptedJsonStr, password) {
+            try {
+                const envelope = JSON.parse(encryptedJsonStr);
+                if (!envelope.v || !envelope.salt || !envelope.iv || !envelope.data) throw new Error("Invalid Format");
+                const salt = this.hex2buf(envelope.salt);
+                const iv = this.hex2buf(envelope.iv);
+                const data = this.base642buf(envelope.data);
+                const key = await this.deriveKey(password, salt);
+                const decryptedContent = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, key, data);
+                const dec = new TextDecoder();
+                return JSON.parse(dec.decode(decryptedContent));
+            } catch (e) { throw new Error("Decryption Failed"); }
+        },
+        buf2hex(buffer) { return [...new Uint8Array(buffer)].map(x => x.toString(16).padStart(2, '0')).join(''); },
+        hex2buf(hexString) { return new Uint8Array(hexString.match(/.{1,2}/g).map(byte => parseInt(byte, 16))); },
+        buf2base64(buffer) { let binary = ''; const bytes = new Uint8Array(buffer); const len = bytes.byteLength; for (let i = 0; i < len; i++) binary += String.fromCharCode(bytes[i]); return window.btoa(binary); },
+        base642buf(base64) { const binary_string = window.atob(base64); const len = binary_string.length; const bytes = new Uint8Array(len); for (let i = 0; i < len; i++) bytes[i] = binary_string.charCodeAt(i); return bytes.buffer; }
+    };
+
+    const LocalVaultService = {
+        dbName: 'secure-wallet-local-vault',
+        storeName: 'vaults',
+        key: 'primary',
+        open() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(this.dbName, 1);
+                request.onupgradeneeded = () => request.result.createObjectStore(this.storeName);
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        },
+        async get() {
+            const db = await this.open();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(this.storeName, 'readonly');
+                const request = tx.objectStore(this.storeName).get(this.key);
+                request.onsuccess = () => resolve(request.result || null);
+                request.onerror = () => reject(request.error);
+                tx.oncomplete = () => db.close();
+            });
+        },
+        async save(encryptedContent, fileName) {
+            const db = await this.open();
+            const record = { encryptedContent, fileName, savedAt: new Date().toISOString() };
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(this.storeName, 'readwrite');
+                tx.objectStore(this.storeName).put(record, this.key);
+                tx.oncomplete = () => { db.close(); resolve(record); };
+                tx.onerror = () => { db.close(); reject(tx.error); };
+            });
+        }
+    };
+
+    createApp({
+        data() {
+            return {
+                view: 'login',
+                db: [],
+                masterPassword: '',
+                showLoginPass: false,
+                uploadedFileContent: null,
+                searchQuery: '',
+                defaultFileName: 'secure_wallet_db.enc',
+                savedVaultInfo: null,
+                
+                tempRecord: { id: null, title: '', category: 'Website', username: '', password: '', showPass: false, cardNum: '', cardHolder: '', cardExpiry: '', cardCvv: '', expMonth: '', expYear: '', showCvv: false, noteContent: '', fields: [], attachments: [] },
+                
+                categories: ['Website', 'Credit Card', 'Note', 'Social', 'Other'],
+                crackTimeText: '',
+                strengthScore: 0,
+                newMasterPass: '',
+                confirmMasterPass: '',
+                settingShowPass: false,
+                isLoading: false,
+                loadingText: '',
+                confirmDialog: { visible: false, title: '', message: '', okText: 'ตกลง', showCancel: true, resolve: null }
+            }
+        },
+        computed: {
+            headerTitle() {
+                if(this.view === 'settings') return 'ตั้งค่า';
+                if(this.view === 'list') return 'รายการทั้งหมด';
+                return this.tempRecord.id ? 'แก้ไขข้อมูล' : 'สร้างใหม่';
+            },
+            filteredRecords() {
+                if(!this.searchQuery) return this.db;
+                const q = this.searchQuery.toLowerCase();
+                return this.db.filter(r => r.title.toLowerCase().includes(q));
+            },
+            strengthColor() { if(this.strengthScore <= 1) return 'bg-red-500'; if(this.strengthScore === 2) return 'bg-yellow-500'; return 'bg-green-500'; },
+            strengthTextClass() { if(this.strengthScore <= 1) return 'text-red-500'; if(this.strengthScore === 2) return 'text-yellow-600'; return 'text-green-600'; },
+            yearOptions() {
+                const current = new Date().getFullYear();
+                const yrs = [];
+                for(let i=0; i<20; i++) yrs.push(current + i);
+                return yrs;
+            }
+        },
+        async mounted() {
+            try {
+                this.savedVaultInfo = await LocalVaultService.get();
+                if (this.savedVaultInfo?.fileName) this.defaultFileName = this.savedVaultInfo.fileName;
+            } catch (e) {
+                console.error('Cannot read local vault', e);
+            }
+        },
+        methods: {
+            showDialog({ title, message, okText = 'ตกลง', showCancel = true }) {
+                return new Promise((resolve) => {
+                    this.confirmDialog = { visible: true, title, message, okText, showCancel, resolve };
+                });
+            },
+            resolveConfirm(result) {
+                const resolve = this.confirmDialog.resolve;
+                this.confirmDialog.visible = false;
+                this.confirmDialog.resolve = null;
+                if (resolve) resolve(result);
+            },
+            appAlert(message, title = 'แจ้งเตือน') {
+                return this.showDialog({ title, message, okText: 'ตกลง', showCancel: false });
+            },
+            appConfirm(message, title = 'ยืนยัน', okText = 'ตกลง') {
+                return this.showDialog({ title, message, okText, showCancel: true });
+            },
+            async persistLocalVault(encryptedStr = null) {
+                const content = encryptedStr || await CryptoService.encrypt(this.db, this.masterPassword);
+                try {
+                    this.savedVaultInfo = await LocalVaultService.save(content, this.defaultFileName);
+                } catch (e) {
+                    console.error('Cannot save local vault', e);
+                    await this.appAlert('บันทึกข้อมูลไว้ในเครื่องไม่ได้ กรุณาบันทึกเป็นไฟล์สำรองไว้ด้วย');
+                }
+                return content;
+            },
+            getIconSvg(cat) {
+                const map = {
+                    'Website': '<svg class="icon text-blue-500" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>',
+                    'Credit Card': '<svg class="icon text-purple-500" viewBox="0 0 24 24"><path d="M20 4H4c-1.11 0-1.99.89-1.99 2L2 18c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/></svg>',
+                    'Note': '<svg class="icon text-yellow-500" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 2 2h8l6-6V4c0-1.1-.9-2-2-2zm2 14l-4 4V16h4z"/></svg>',
+                    'Social': '<svg class="icon text-pink-500" viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>',
+                    'Other': '<svg class="icon text-gray-500" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>'
+                };
+                return map[cat] || map['Other'];
+            },
+            async triggerSaveFlow() {
+                this.isLoading = true;
+                this.loadingText = 'กำลังเข้ารหัสและบันทึก...';
+                await new Promise(r => setTimeout(r, 100));
+                try {
+                    const encryptedStr = await CryptoService.encrypt(this.db, this.masterPassword);
+                    await this.persistLocalVault(encryptedStr);
+                    if (window.showSaveFilePicker) {
+                        try {
+                            const handle = await window.showSaveFilePicker({ suggestedName: this.defaultFileName, types: [{ description: 'Encrypted Wallet', accept: { 'text/plain': ['.enc'] }, }], });
+                            const writable = await handle.createWritable(); await writable.write(encryptedStr); await writable.close();
+                            this.defaultFileName = handle.name;
+                            await this.persistLocalVault(encryptedStr);
+                            await this.appAlert('บันทึกข้อมูลในเครื่องและไฟล์เรียบร้อยแล้ว');
+                        } catch (err) { if (err.name !== 'AbortError') console.error(err); }
+                    } else {
+                        // FIX: ใช้ application/octet-stream เพื่อบังคับให้ Android ไม่เติม .txt ต่อท้าย
+                        const blob = new Blob([encryptedStr], { type: "application/octet-stream" }); 
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a'); a.href = url; a.download = this.defaultFileName; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                        await this.appAlert('บันทึกข้อมูลในเครื่องเรียบร้อยแล้ว และกำลังดาวน์โหลดไฟล์สำรอง');
+                    }
+                } catch (e) { await this.appAlert('เกิดข้อผิดพลาด: ' + e.message); } finally { this.isLoading = false; }
+            },
+            handleFileUpload(event) {
+                const file = event.target.files[0]; if (!file) return;
+                this.defaultFileName = file.name; const reader = new FileReader();
+                reader.onload = (e) => { this.uploadedFileContent = e.target.result; }; reader.readAsText(file);
+            },
+            async unlockDatabase() {
+                if (!this.masterPassword) return this.appAlert('กรุณาใส่รหัสผ่าน');
+                this.isLoading = true; this.loadingText = 'กำลังถอดรหัส...'; await new Promise(r => setTimeout(r, 100));
+                const encryptedSource = this.uploadedFileContent || this.savedVaultInfo?.encryptedContent;
+                if (encryptedSource) {
+                    try {
+                        this.db = await CryptoService.decrypt(encryptedSource, this.masterPassword);
+                        if (this.uploadedFileContent) await this.persistLocalVault(this.uploadedFileContent);
+                        this.view = 'list';
+                    } catch (e) {
+                        await this.appAlert('รหัสผิด หรือไฟล์เสียหาย');
+                    }
+                } else {
+                    this.isLoading = false;
+                    const shouldCreate = await this.appConfirm('ยังไม่มีข้อมูลในเครื่อง ต้องการสร้างฐานข้อมูลใหม่หรือไม่?', 'สร้างใหม่', 'สร้างใหม่');
+                    if (shouldCreate) {
+                        this.isLoading = true;
+                        this.loadingText = 'กำลังสร้างฐานข้อมูล...';
+                        this.db = [];
+                        await this.persistLocalVault();
+                        this.view = 'list';
+                    }
+                }
+                this.isLoading = false;
+            },
+            changeCategory(cat) { this.tempRecord.category = cat; },
+            async saveRecord() { if(!this.tempRecord.title) return this.appAlert('ใส่ชื่อรายการ'); const r = JSON.parse(JSON.stringify(this.tempRecord)); if(this.tempRecord.id) { const i = this.db.findIndex(x => x.id === this.tempRecord.id); if(i!==-1) this.db[i]=r; } else { r.id = Date.now().toString(); this.db.push(r); } await this.persistLocalVault(); this.view = 'list'; },
+            async deleteRecord() { if(await this.appConfirm('ต้องการลบรายการนี้หรือไม่?', 'ลบรายการ', 'ลบ')) { this.db = this.db.filter(r => r.id !== this.tempRecord.id); await this.persistLocalVault(); this.view = 'list'; } },
+            handleAttachment(e, t) { const f = e.target.files[0]; if(!f) return; if(f.size > 2*1024*1024) { this.appAlert("ไฟล์เกิน 2MB"); e.target.value=""; return; } const r = new FileReader(); r.onload = (ev) => { if(!this.tempRecord.attachments) this.tempRecord.attachments=[]; this.tempRecord.attachments.push({name:f.name, type:t, size:f.size, data:ev.target.result}); }; r.readAsDataURL(f); },
+            removeAttachment(i) { this.tempRecord.attachments.splice(i, 1); },
+            createNew() { this.tempRecord = { id: null, title: '', category: 'Website', username: '', password: '', showPass: false, cardNum: '', cardHolder: '', cardExpiry: '', cardCvv: '', expMonth: '', expYear: '', showCvv: false, noteContent: '', fields: [], attachments: [] }; this.crackTimeText = ''; this.view = 'editor'; },
+            editRecord(r) { 
+                this.tempRecord = JSON.parse(JSON.stringify(r)); 
+                if(!this.tempRecord.attachments) this.tempRecord.attachments=[]; 
+                if(this.tempRecord.showPass===undefined) this.tempRecord.showPass=false; 
+                if(this.tempRecord.showCvv===undefined) this.tempRecord.showCvv=false; 
+                
+                // Backwards compatibility for old data (convert 'YYYY-MM' to separate fields)
+                if(this.tempRecord.cardExpiry && (!this.tempRecord.expYear || !this.tempRecord.expMonth)) {
+                    const [y, m] = this.tempRecord.cardExpiry.split('-');
+                    this.tempRecord.expYear = y ? y.slice(-2) : '';
+                    this.tempRecord.expMonth = m || '';
+                }
+                this.checkStrength(); 
+                this.view = 'editor'; 
+            },
+            getSubtitle(r) { if(r.category==='Website') return r.username||'No User'; if(r.category==='Credit Card') return r.cardNum?'**** '+r.cardNum.slice(-4):'Card'; if(r.category==='Note') return 'Note'; return r.category; },
+            goBack() { this.view = 'list'; }, logout() { location.reload(); },
+            addField() { this.tempRecord.fields.push({ label: '', value: '' }); }, removeField(i) { this.tempRecord.fields.splice(i, 1); },
+            generateIntoPassword() { const c = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"; let p = ""; for(let i=0; i<16; i++) p+=c.charAt(Math.floor(Math.random()*c.length)); this.tempRecord.password = p; this.checkStrength(); },
+            
+            // --- UPDATED TRANSLATION LOGIC ---
+            checkStrength() { 
+                if(!this.tempRecord.password) { this.crackTimeText=''; this.strengthScore=0; return; } 
+                const res = zxcvbn(this.tempRecord.password); 
+                this.strengthScore = res.score; 
+                
+                // Enhanced Translation Map
+                let txt = res.crack_times_display.offline_slow_hashing_1e4_per_second;
+                const map = { 
+                    'less than a second': 'ทันที', 
+                    'seconds': 'วินาที', 
+                    'minute': 'นาที', 
+                    'minutes': 'นาที', 
+                    'hour': 'ชั่วโมง', 
+                    'hours': 'ชั่วโมง', 
+                    'day': 'วัน', 
+                    'days': 'วัน', 
+                    'month': 'เดือน', 
+                    'months': 'เดือน', 
+                    'year': 'ปี', 
+                    'years': 'ปี', 
+                    'centuries': 'หลายศตวรรษ',
+                    'instant': 'ทันที'
+                };
+                
+                // Replace keys with Thai values
+                for(let k in map) { 
+                    if(txt.includes(k)) {
+                        txt = txt.replace(k, map[k]); 
+                        break; 
+                    }
+                }
+                this.crackTimeText = txt; 
+            },
+            async changeMasterPassword() { if(this.newMasterPass !== this.confirmMasterPass) return this.appAlert('รหัสไม่ตรง'); if(!this.newMasterPass) return this.appAlert('ใส่รหัส'); if(await this.appConfirm('ต้องการเปลี่ยนรหัสผ่านหลักหรือไม่?', 'เปลี่ยนรหัส', 'เปลี่ยนรหัส')) { this.masterPassword = this.newMasterPass; await this.triggerSaveFlow(); this.newMasterPass=''; this.confirmMasterPass=''; } }
+        }
+    }).mount('#app');
+</script>
+<script>
+    // โค้ดสำหรับเบลอหน้าจอเมื่อสลับแอป (ป้องกันการแอบมองผ่าน Recent Apps)
+    document.addEventListener("visibilitychange", () => {
+        const appDiv = document.getElementById('app');
+        if (document.hidden) {
+            // เมื่อย่อแอป หรือสลับหน้าจอ -> เบลอทันที
+            appDiv.style.filter = 'blur(20px)';
+            appDiv.style.opacity = '0.1';
+        } else {
+            // เมื่อกลับเข้ามา -> ชัดเหมือนเดิม
+            appDiv.style.filter = 'none';
+            appDiv.style.opacity = '1';
+        }
+    });
+</script>
+</body>
+</html>
