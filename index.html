@@ -138,13 +138,14 @@
                     <svg class="icon absolute left-4 top-3.5 text-gray-400" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
                     <input type="text" v-model="searchQuery" placeholder="ค้นหา..." class="w-full bg-gray-100 p-3 pl-10 rounded-full focus:outline-none focus:ring-2 focus:ring-red-200 shadow-inner">
                 </div>
+                <p v-if="saveStatus" class="text-xs text-gray-400 mt-2 pl-2">{{ saveStatus }}</p>
             </div>
 
             <div v-if="filteredRecords.length === 0" class="text-center text-gray-400 mt-10">
                 <p>ไม่พบรายการ</p>
             </div>
 
-            <div v-for="rec in filteredRecords" :key="rec.id" @click="editRecord(rec)" 
+            <div v-for="rec in visibleRecords" :key="rec.id" @click="editRecord(rec)" 
                  class="relative pl-4 py-3 border-b border-gray-100 hover:bg-gray-50 cursor-pointer transition flex items-center justify-between group">
                 <div class="flex items-center gap-4">
                     <div class="w-10 h-10 rounded-full bg-red-50 text-red-500 flex items-center justify-center text-lg shadow-sm group-hover:bg-red-100 transition">
@@ -157,6 +158,10 @@
                 </div>
                 <svg class="icon text-gray-300" viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
             </div>
+
+            <button v-if="hiddenRecordCount > 0" @click="visibleLimit += 150" class="w-full py-3 text-sm font-bold text-red-600 bg-red-50 rounded-lg">
+                แสดงเพิ่มอีก {{ Math.min(hiddenRecordCount, 150) }} รายการ
+            </button>
         </div>
 
         <div v-if="view === 'editor'" class="space-y-6 pb-20">
@@ -398,6 +403,13 @@
                 settingShowPass: false,
                 isLoading: false,
                 loadingText: '',
+                saveTimer: null,
+                saveInProgress: false,
+                saveQueued: false,
+                currentSavePromise: null,
+                saveStatus: '',
+                hasUnsavedChanges: false,
+                visibleLimit: 150,
                 confirmDialog: { visible: false, title: '', message: '', okText: 'ตกลง', showCancel: true, resolve: null }
             }
         },
@@ -410,7 +422,13 @@
             filteredRecords() {
                 if(!this.searchQuery) return this.db;
                 const q = this.searchQuery.toLowerCase();
-                return this.db.filter(r => r.title.toLowerCase().includes(q));
+                return this.db.filter(r => (r.title || '').toLowerCase().includes(q));
+            },
+            visibleRecords() {
+                return this.filteredRecords.slice(0, this.visibleLimit);
+            },
+            hiddenRecordCount() {
+                return Math.max(this.filteredRecords.length - this.visibleLimit, 0);
             },
             strengthColor() { if(this.strengthScore <= 1) return 'bg-red-500'; if(this.strengthScore === 2) return 'bg-yellow-500'; return 'bg-green-500'; },
             strengthTextClass() { if(this.strengthScore <= 1) return 'text-red-500'; if(this.strengthScore === 2) return 'text-yellow-600'; return 'text-green-600'; },
@@ -421,13 +439,29 @@
                 return yrs;
             }
         },
+        watch: {
+            searchQuery() {
+                this.visibleLimit = 150;
+            }
+        },
         async mounted() {
             try {
+                if (navigator.storage?.persist) await navigator.storage.persist();
                 this.savedVaultInfo = await LocalVaultService.get();
                 if (this.savedVaultInfo?.fileName) this.defaultFileName = this.savedVaultInfo.fileName;
             } catch (e) {
                 console.error('Cannot read local vault', e);
             }
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden && this.hasUnsavedChanges) this.flushLocalSave(true);
+            });
+            window.addEventListener('beforeunload', (event) => {
+                if (this.hasUnsavedChanges || this.saveInProgress) {
+                    event.preventDefault();
+                    event.returnValue = '';
+                    this.flushLocalSave(true);
+                }
+            });
         },
         methods: {
             showDialog({ title, message, okText = 'ตกลง', showCancel = true }) {
@@ -457,6 +491,48 @@
                 }
                 return content;
             },
+            scheduleLocalSave(delay = 700) {
+                this.hasUnsavedChanges = true;
+                this.saveStatus = 'รอบันทึกในเครื่อง...';
+                if (this.saveTimer) clearTimeout(this.saveTimer);
+                this.saveTimer = setTimeout(() => this.flushLocalSave(), delay);
+            },
+            async flushLocalSave(force = false) {
+                if (!this.masterPassword || (!this.hasUnsavedChanges && !this.saveQueued && !this.saveInProgress)) return;
+                if (this.saveTimer) {
+                    clearTimeout(this.saveTimer);
+                    this.saveTimer = null;
+                }
+                if (this.saveInProgress) {
+                    this.saveQueued = true;
+                    if (force && this.currentSavePromise) {
+                        await this.currentSavePromise;
+                        if (this.hasUnsavedChanges || this.saveQueued) await this.flushLocalSave(true);
+                    }
+                    return;
+                }
+                if (!this.hasUnsavedChanges && !this.saveQueued) return;
+                this.saveInProgress = true;
+                this.saveQueued = false;
+                this.saveStatus = 'กำลังบันทึกในเครื่อง...';
+                try {
+                    this.currentSavePromise = this.persistLocalVault();
+                    await this.currentSavePromise;
+                    this.hasUnsavedChanges = false;
+                    this.saveStatus = 'บันทึกในเครื่องแล้ว';
+                } finally {
+                    this.saveInProgress = false;
+                    this.currentSavePromise = null;
+                    if (this.saveQueued) {
+                        if (force) await this.flushLocalSave(true);
+                        else this.scheduleLocalSave(300);
+                    } else {
+                        setTimeout(() => {
+                            if (!this.saveInProgress && !this.hasUnsavedChanges) this.saveStatus = '';
+                        }, 2500);
+                    }
+                }
+            },
             getIconSvg(cat) {
                 const map = {
                     'Website': '<svg class="icon text-blue-500" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>',
@@ -472,8 +548,14 @@
                 this.loadingText = 'กำลังเข้ารหัสและบันทึก...';
                 await new Promise(r => setTimeout(r, 100));
                 try {
+                    if (this.saveTimer) {
+                        clearTimeout(this.saveTimer);
+                        this.saveTimer = null;
+                    }
                     const encryptedStr = await CryptoService.encrypt(this.db, this.masterPassword);
                     await this.persistLocalVault(encryptedStr);
+                    this.hasUnsavedChanges = false;
+                    this.saveStatus = 'บันทึกในเครื่องแล้ว';
                     if (window.showSaveFilePicker) {
                         try {
                             const handle = await window.showSaveFilePicker({ suggestedName: this.defaultFileName, types: [{ description: 'Encrypted Wallet', accept: { 'text/plain': ['.enc'] }, }], });
@@ -505,6 +587,7 @@
                     try {
                         this.db = await CryptoService.decrypt(encryptedSource, this.masterPassword);
                         if (this.uploadedFileContent) await this.persistLocalVault(this.uploadedFileContent);
+                        this.visibleLimit = 150;
                         this.view = 'list';
                     } catch (e) {
                         await this.appAlert('รหัสผิด หรือไฟล์เสียหาย');
@@ -517,14 +600,15 @@
                         this.loadingText = 'กำลังสร้างฐานข้อมูล...';
                         this.db = [];
                         await this.persistLocalVault();
+                        this.visibleLimit = 150;
                         this.view = 'list';
                     }
                 }
                 this.isLoading = false;
             },
             changeCategory(cat) { this.tempRecord.category = cat; },
-            async saveRecord() { if(!this.tempRecord.title) return this.appAlert('ใส่ชื่อรายการ'); const r = JSON.parse(JSON.stringify(this.tempRecord)); if(this.tempRecord.id) { const i = this.db.findIndex(x => x.id === this.tempRecord.id); if(i!==-1) this.db[i]=r; } else { r.id = Date.now().toString(); this.db.push(r); } await this.persistLocalVault(); this.view = 'list'; },
-            async deleteRecord() { if(await this.appConfirm('ต้องการลบรายการนี้หรือไม่?', 'ลบรายการ', 'ลบ')) { this.db = this.db.filter(r => r.id !== this.tempRecord.id); await this.persistLocalVault(); this.view = 'list'; } },
+            async saveRecord() { if(!this.tempRecord.title) return this.appAlert('ใส่ชื่อรายการ'); const r = JSON.parse(JSON.stringify(this.tempRecord)); if(this.tempRecord.id) { const i = this.db.findIndex(x => x.id === this.tempRecord.id); if(i!==-1) this.db[i]=r; } else { r.id = Date.now().toString(); this.db.push(r); } this.view = 'list'; this.scheduleLocalSave(300); if(!this.savedVaultInfo) await this.flushLocalSave(true); },
+            async deleteRecord() { if(await this.appConfirm('ต้องการลบรายการนี้หรือไม่?', 'ลบรายการ', 'ลบ')) { this.db = this.db.filter(r => r.id !== this.tempRecord.id); this.view = 'list'; this.scheduleLocalSave(300); if(!this.savedVaultInfo) await this.flushLocalSave(true); } },
             handleAttachment(e, t) { const f = e.target.files[0]; if(!f) return; if(f.size > 2*1024*1024) { this.appAlert("ไฟล์เกิน 2MB"); e.target.value=""; return; } const r = new FileReader(); r.onload = (ev) => { if(!this.tempRecord.attachments) this.tempRecord.attachments=[]; this.tempRecord.attachments.push({name:f.name, type:t, size:f.size, data:ev.target.result}); }; r.readAsDataURL(f); },
             removeAttachment(i) { this.tempRecord.attachments.splice(i, 1); },
             createNew() { this.tempRecord = { id: null, title: '', category: 'Website', username: '', password: '', showPass: false, cardNum: '', cardHolder: '', cardExpiry: '', cardCvv: '', expMonth: '', expYear: '', showCvv: false, noteContent: '', fields: [], attachments: [] }; this.crackTimeText = ''; this.view = 'editor'; },
@@ -544,7 +628,8 @@
                 this.view = 'editor'; 
             },
             getSubtitle(r) { if(r.category==='Website') return r.username||'No User'; if(r.category==='Credit Card') return r.cardNum?'**** '+r.cardNum.slice(-4):'Card'; if(r.category==='Note') return 'Note'; return r.category; },
-            goBack() { this.view = 'list'; }, logout() { location.reload(); },
+            goBack() { this.view = 'list'; },
+            async logout() { if(this.hasUnsavedChanges || this.saveInProgress) { this.isLoading = true; this.loadingText = 'กำลังบันทึกก่อนออก...'; await this.flushLocalSave(true); } location.reload(); },
             addField() { this.tempRecord.fields.push({ label: '', value: '' }); }, removeField(i) { this.tempRecord.fields.splice(i, 1); },
             generateIntoPassword() { const c = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"; let p = ""; for(let i=0; i<16; i++) p+=c.charAt(Math.floor(Math.random()*c.length)); this.tempRecord.password = p; this.checkStrength(); },
             

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'secure-wallet-v4'; // ถ้าแก้โค้ดแล้วไม่เปลี่ยน ให้เปลี่ยนเลขเวอร์ชันตรงนี้ (เช่น v3 -> v4)
+const CACHE_NAME = 'secure-wallet-v7'; // ถ้าแก้โค้ดแล้วไม่เปลี่ยน ให้เปลี่ยนเลขเวอร์ชันตรงนี้ (เช่น v3 -> v4)
 const ASSETS_TO_CACHE = [
     './',
     './index.html',        // ชื่อไฟล์ HTML หลักของคุณ
@@ -6,17 +6,17 @@ const ASSETS_TO_CACHE = [
     './icon.png',          // อย่าลืมหาไฟล์รูปชื่อ icon.png มาวางด้วยนะครับ
     './lib/tailwindcss.js',
     './lib/vue.global.js',
-    './lib/zxcvbn.js',
-    // Cache ไฟล์ภายนอก (Font และ Icon) ให้ใช้ offline ได้
-    'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css',
-    'https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600&display=swap'
+    './lib/zxcvbn.js'
 ];
 
 // 1. Install Service Worker & Cache Assets
 self.addEventListener('install', (event) => {
+    self.skipWaiting();
     event.waitUntil(
         caches.open(CACHE_NAME).then((cache) => {
-            return cache.addAll(ASSETS_TO_CACHE);
+            return Promise.all(ASSETS_TO_CACHE.map((asset) => cache.add(asset).catch((err) => {
+                console.warn('Cache failed:', asset, err);
+            })));
         })
     );
 });
@@ -32,16 +32,22 @@ self.addEventListener('activate', (event) => {
                     }
                 })
             );
-        })
+        }).then(() => self.clients.claim())
     );
 });
 
 // 3. Fetch (Serve from Cache first, then Network)
 self.addEventListener('fetch', (event) => {
+    if (event.request.method !== 'GET') return;
     event.respondWith(
-        caches.match(event.request).then((cachedResponse) => {
-            // ถ้ามีใน cache ให้ใช้เลย (Offline) ถ้าไม่มีให้โหลดจากเน็ต
-            return cachedResponse || fetch(event.request);
+        fetch(event.request).then((networkResponse) => {
+            const copy = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy)).catch(() => {});
+            return networkResponse;
+        }).catch(() => {
+            return caches.match(event.request).then((cachedResponse) => {
+                return cachedResponse || caches.match('./index.html');
+            });
         })
     );
 });
